@@ -1,0 +1,3 @@
+[submodule "astronomaly"]
+	path = astronomaly
+	url = https://github.com/MichelleLochner/astronomaly.git

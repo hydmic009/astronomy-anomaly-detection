@@ -1,0 +1,15 @@
+# Ignore Python's cache files
+__pycache__/
+*.pyc
+
+# Ignore large data and output directories
+data/
+astronomaly_output/
+
+# Ignore virtual environment folders (good practice)
+venv/
+.venv/
+
+# Ignore IDE-specific folders
+.vscode/
+.idea/
