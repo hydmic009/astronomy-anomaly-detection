@@ -1,6 +1,7 @@
 import os
 import glob
 import pandas as pd
+import torch  # Uncomment if you need to use PyTorch directly
 import numpy as np
 import time
 from PIL import Image
@@ -195,8 +196,10 @@ def main(data_path, solutions_path, output_path):
 
     # 2. LOAD GROUND TRUTH DATA
     solutions = pd.read_csv(solutions_path, dtype={'GalaxyID': str})
+    print("Available columns:", solutions.columns.tolist())
+
     # Only keep anomalies above your chosen threshold
-    anomaly_df = solutions[solutions['Class6.1'] > 0.9]
+    anomaly_df = solutions[solutions['Class6.1'] > 0.6]
 
  
     # 3. RUN THE ASTRONOMALY PIPELINE (PRE-ACTIVE LEARNING)
@@ -218,9 +221,30 @@ def main(data_path, solutions_path, output_path):
 
     features = shape_features.EllipseFitFeatures(output_dir=output_path, force_rerun=True, channel=0).run_on_dataset(dataset)
 
+###################### ADDING CNN FEATURES ######################`
+#    print("Step 2: Extracting CNN deep features..."
+    print("Step 2: Extracting CNN deep features...")
+    # Use the CNN_Features class from astronomaly.feature_extraction
+    # Ensure the CNN_Features class is imported correctly
+    # from astronomaly.feature_extraction import CNN_Features
 
-    features = scaling.FeatureScaler(output_dir=output_path, force_rerun=True).run(features)
-    initial_scores = isolation_forest.IforestAlgorithm(output_dir=output_path, force_rerun=True, contamination = 0.05).run(features)
+    from astronomaly.feature_extraction.pretrained_cnn  import  CNN_Features
+
+    
+    cnn_stage = CNN_Features(
+    model_choice='resnet50',   # or 'resnet18' / 'zoobot'
+    output_dir=output_path,
+    force_rerun=True
+    )
+    features = cnn_stage.run_on_dataset(dataset)
+
+   #  features = scaling.FeatureScaler(output_dir=output_path, force_rerun=True).run(features)
+    features = scaling.FeatureScaler(
+    output_dir=output_path,
+    force_rerun=True
+    ).run(features)
+
+    initial_scores = isolation_forest.IforestAlgorithm(output_dir=output_path, force_rerun=True, contamination = 0.2).run(features)
 
     top20_ids = list(initial_scores.sort_values('score', ascending=False).head(20).index)
     print("Top 20 by IForest:", top20_ids)
@@ -388,6 +412,13 @@ def main(data_path, solutions_path, output_path):
     print(f"Dataset: Galaxy Zoo Subset ({len(dataset.index)} objects)")
     print(f"Ground Truth Anomalies: {len(true_anomaly_indices)}")
     print("-" * 25)
+
+########################
+    print("Total images in dataset:", len(dataset.index))
+    print("Total ground‐truth anomalies:", len(anomaly_df))
+    print("Sample IDs:", list(anomaly_df['GalaxyID'].head(5)))
+#############################
+
     print("ASTRONOMALY (Initial Isolation Forest):")
     print(f"  Recall@{perf_before['top_k']}: {perf_before['recall_at_k']:.4f}")
     print(f"  Rank Weighted Score (RWS): {perf_before['rws']:.4f}")
