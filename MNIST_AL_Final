@@ -1,0 +1,137 @@
+# 1. Install dependencies
+!pip install -q git+https://github.com/modAL-python/modAL.git google-generativeai Pillow
+
+# 2. Imports and configuration
+import sys
+import time
+import numpy as np
+import google.generativeai as genai
+from PIL import Image
+from IPython.display import clear_output,display
+from modAL.models import ActiveLearner
+from modAL.uncertainty import uncertainty_sampling
+from sklearn.datasets import load_digits
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+import matplotlib.pyplot as plt
+%matplotlib inline
+
+# 3. Configure Gemini
+MY_API_KEY      = "AIzaSyDjMJ_1fymbbG2B51gZ4zDyVqQbmzZ1S1E"
+MY_GEMINI_MODEL = "gemini-1.5-flash"
+genai.configure(api_key=MY_API_KEY)
+
+def query_gemini_label(img_array):
+    arr    = (img_array.reshape(8,8) / 16 * 255).astype(np.uint8)
+    pil_img= Image.fromarray(arr)
+    prompt = (
+        "You are an expert at reading low-resolution handwritten digits.\n"
+        "Below is an 8×8 grayscale image. Reply with exactly one digit (0–9)."
+    )
+    model  = genai.GenerativeModel(MY_GEMINI_MODEL)
+    try:
+        resp = model.generate_content([prompt, pil_img], generation_config={"temperature":0.0})
+        return int(resp.text.strip().splitlines()[0])
+    except:
+        return None
+
+# 4. Load data and initial split
+X, y           = load_digits(return_X_y=True)
+X_tr, X_te, y_tr, y_te = train_test_split(X, y, random_state=0)
+n_initial      = 100
+init_idx       = np.random.choice(len(X_tr), n_initial, replace=False)
+X_initial, y_initial = X_tr[init_idx], y_tr[init_idx]
+X_pool, y_pool = np.delete(X_tr, init_idx, axis=0), np.delete(y_tr, init_idx, axis=0)
+
+# 5. Initialize ActiveLearner for human oracle
+human_learner = ActiveLearner(
+    estimator=RandomForestClassifier(),
+    query_strategy=uncertainty_sampling,
+    X_training=X_initial,
+    y_training=y_initial
+)
+n_queries      = 20
+human_acc      = [human_learner.score(X_te, y_te)]
+
+# 6. Human-interactive AL loop
+for i in range(n_queries):
+    # clear_output(wait=True)
+    q_idx, q_inst = human_learner.query(X_pool)
+    # display digit + accuracy
+    fig, (ax1, ax2) = plt.subplots(1,2, figsize=(10,4))
+    ax1.imshow(q_inst.reshape(8,8), cmap='gray')
+    ax1.axis('off'); ax1.set_title(f'Query {i+1}/{n_queries}')
+    ax2.plot(range(len(human_acc)), human_acc, marker='o')
+    ax2.set_xlabel('Queries'); ax2.set_ylabel('Accuracy')
+    ax2.set_title('Human-Oracular Accuracy')
+    ax2.grid(True)
+    plt.tight_layout(); plt.show()
+    print()
+    sys.stdout.flush()
+
+    # get user label
+    try:
+        y_new = int(input("Which digit is this? "))
+    except ValueError:
+        print("Invalid input, using -1")
+        y_new = -1
+
+    # teach and record
+    human_learner.teach(q_inst.reshape(1,-1), np.array([y_new]))
+    human_acc.append(human_learner.score(X_te, y_te))
+
+    # remove from pool
+    X_pool = np.delete(X_pool, q_idx, axis=0)
+    y_pool = np.delete(y_pool, q_idx, axis=0)
+
+   # clear_output(wait=True)
+
+# 7. Define Gemini-oracle AL function
+def gemini_oracle_active_learning(learner, X_pool, n_queries=20, rate_limit_s=6):
+    acc_scores = [learner.score(X_te, y_te)]
+    for i in range(n_queries):
+        print(f"\n--- Gemini oracle query {i+1}/{n_queries} ---")
+        q_idx, q_inst = learner.query(X_pool)
+
+        arr     = (q_inst.reshape(8,8) / 16 * 255).astype(np.uint8)
+        pil_img = Image.fromarray(arr)
+        print("Image being sent to Gemini:")
+        display(pil_img)
+
+        print("Sending image to Gemini for labeling...")
+        g_lbl = query_gemini_label(q_inst)
+        print(f"Gemini predicted: {g_lbl}")
+
+
+        if g_lbl is None:
+            g_lbl = -1
+        learner.teach(q_inst.reshape(1,-1), np.array([g_lbl]))
+        acc_scores.append(learner.score(X_te, y_te))
+        X_pool = np.delete(X_pool, q_idx, axis=0)
+        time.sleep(rate_limit_s)
+    return acc_scores
+
+# 8. Run Gemini-oracle loop
+# reset pool & learner
+X_pool2 = np.delete(X_tr, init_idx, axis=0)
+gemini_learner = ActiveLearner(
+    estimator=RandomForestClassifier(),
+    query_strategy=uncertainty_sampling,
+    X_training=X_initial,
+    y_training=y_initial
+)
+gemini_acc = gemini_oracle_active_learning(
+    learner=gemini_learner,
+    X_pool=X_pool2,
+    n_queries=n_queries,
+    rate_limit_s=6
+)
+
+# 9. Final comparison plot
+plt.figure(figsize=(8,5))
+plt.plot(range(len(human_acc)),  human_acc,  marker='o', label='Human Oracle')
+plt.plot(range(len(gemini_acc)), gemini_acc, marker='s', label='Gemini Oracle')
+plt.title('Classifier Accuracy on Test Set')
+plt.xlabel('Queries'); plt.ylabel('Accuracy')
+plt.legend(); plt.grid(True)
+plt.show()
